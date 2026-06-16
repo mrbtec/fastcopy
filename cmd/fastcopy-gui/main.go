@@ -3,6 +3,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -129,6 +131,8 @@ func main() {
 	// ── Copy Button ──
 	var copying bool
 	var copyBtn *widget.Button
+	var stopBtn *widget.Button
+	var cancelFunc context.CancelFunc
 
 	copyBtn = widget.NewButton("▶  Start Copy", func() {
 		if copying {
@@ -158,6 +162,7 @@ func main() {
 		// UI state: running
 		copying = true
 		copyBtn.Disable()
+		stopBtn.Enable()
 		srcBtn.Disable()
 		dstBtn.Disable()
 		progressBar.Show()
@@ -168,8 +173,11 @@ func main() {
 		filesLabel.SetText("")
 		speedLabel.SetText("")
 
+		ctx, cancel := context.WithCancel(context.Background())
+		cancelFunc = cancel
+
 		go func() {
-			err := engine.Run(src, dst)
+			err := engine.Run(ctx, src, dst)
 
 			// Poll progress while engine is running
 			// This goroutine monitors the copy progress
@@ -228,15 +236,21 @@ func main() {
 			// UI state: finished
 			copying = false
 			copyBtn.Enable()
+			stopBtn.Disable()
 			srcBtn.Enable()
 			dstBtn.Enable()
 			progressBar.SetValue(1)
 
 			if err != nil {
-				statusLabel.SetText("⚠ Completed with errors")
-				appendLog(fmt.Sprintf("ERROR: %s", err))
-				for _, e := range engine.Errors() {
-					appendLog(fmt.Sprintf("  • %s", e))
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || err.Error() == "context canceled" {
+					statusLabel.SetText("⚠ Canceled by user")
+					appendLog("Operation canceled by user.")
+				} else {
+					statusLabel.SetText("⚠ Completed with errors")
+					appendLog(fmt.Sprintf("ERROR: %s", err))
+					for _, e := range engine.Errors() {
+						appendLog(fmt.Sprintf("  • %s", e))
+					}
 				}
 			} else {
 				p := engine.Progress()
@@ -252,6 +266,15 @@ func main() {
 		}()
 	})
 
+	stopBtn = widget.NewButton("🛑 Stop", func() {
+		if cancelFunc != nil {
+			cancelFunc()
+			stopBtn.Disable()
+			appendLog("Stopping copy (waiting for current files to finish)...")
+		}
+	})
+	stopBtn.Disable()
+
 	// ── Layout ──
 	content := container.NewVBox(
 		container.NewCenter(title),
@@ -260,7 +283,7 @@ func main() {
 		pathsForm,
 		optionsBox,
 		widget.NewSeparator(),
-		container.NewCenter(copyBtn),
+		container.NewGridWithColumns(2, copyBtn, stopBtn),
 		layout.NewSpacer(),
 		progressBox,
 		logScroll,

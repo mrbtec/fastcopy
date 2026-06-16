@@ -12,11 +12,11 @@ import (
 
 // Progress tracks copy operation statistics and displays real-time progress.
 type Progress struct {
-	totalFiles   int64
+	totalFiles   atomic.Int64
 	copiedFiles  atomic.Int64
 	skippedFiles atomic.Int64
 	errorFiles   atomic.Int64
-	totalBytes   int64
+	totalBytes   atomic.Int64
 	copiedBytes  atomic.Int64
 
 	startTime time.Time
@@ -29,13 +29,14 @@ type Progress struct {
 // NewProgress creates a new Progress tracker.
 // If quiet is true, no output is printed.
 func NewProgress(totalFiles int64, totalBytes int64, quiet bool) *Progress {
-	return &Progress{
-		totalFiles: totalFiles,
-		totalBytes: totalBytes,
-		quiet:      quiet,
-		startTime:  time.Now(),
-		done:       make(chan struct{}),
+	p := &Progress{
+		quiet:     quiet,
+		startTime: time.Now(),
+		done:      make(chan struct{}),
 	}
+	p.totalFiles.Store(totalFiles)
+	p.totalBytes.Store(totalBytes)
+	return p
 }
 
 // Start begins the progress display loop, printing every 500ms.
@@ -74,6 +75,12 @@ func (p *Progress) Stop() {
 func (p *Progress) AddCopiedFile(bytes int64) {
 	p.copiedFiles.Add(1)
 	p.copiedBytes.Add(bytes)
+}
+
+// AddDiscoveredFile increments total expected files and bytes.
+func (p *Progress) AddDiscoveredFile(bytes int64) {
+	p.totalFiles.Add(1)
+	p.totalBytes.Add(bytes)
 }
 
 // AddSkippedFile increments the skipped file counter.
@@ -117,11 +124,11 @@ func (p *Progress) Snapshot() ProgressSnapshot {
 	}
 
 	return ProgressSnapshot{
-		TotalFiles:   p.totalFiles,
+		TotalFiles:   p.totalFiles.Load(),
 		CopiedFiles:  copied,
 		SkippedFiles: skipped,
 		ErrorFiles:   errors,
-		TotalBytes:   p.totalBytes,
+		TotalBytes:   p.totalBytes.Load(),
 		CopiedBytes:  bytesC,
 		Elapsed:      elapsed,
 		Speed:        speed,
@@ -144,6 +151,8 @@ func (p *Progress) print() {
 	errors := p.errorFiles.Load()
 	processed := copied + skipped + errors
 	bytesC := p.copiedBytes.Load()
+	tBytes := p.totalBytes.Load()
+	tFiles := p.totalFiles.Load()
 	elapsed := time.Since(p.startTime)
 
 	var speed float64
@@ -152,8 +161,8 @@ func (p *Progress) print() {
 	}
 
 	var eta string
-	if speed > 0 && p.totalBytes > 0 {
-		remaining := float64(p.totalBytes-bytesC) / speed
+	if speed > 0 && tBytes > 0 {
+		remaining := float64(tBytes-bytesC) / speed
 		if remaining < 0 {
 			remaining = 0
 		}
@@ -163,8 +172,8 @@ func (p *Progress) print() {
 	}
 
 	fmt.Fprintf(os.Stderr, "\r\033[K[%d/%d files] %s / %s — %s/s — ETA %s",
-		processed, p.totalFiles,
-		formatBytes(bytesC), formatBytes(p.totalBytes),
+		processed, tFiles,
+		formatBytes(bytesC), formatBytes(tBytes),
 		formatBytes(int64(speed)),
 		eta,
 	)

@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"runtime"
@@ -35,39 +36,46 @@ func NewCopyEngine(numWorkers int, opts Options, quiet, dryRun bool) *CopyEngine
 }
 
 // Run executes the copy operation from srcDir to dstDir.
-func (e *CopyEngine) Run(srcDir, dstDir string) error {
-	// Phase 1: Scan source directory
+func (e *CopyEngine) Run(ctx context.Context, srcDir, dstDir string) error {
+	// Phase 1: Setup progress tracker
+	e.progress = NewProgress(0, 0, e.quiet)
+	if !e.dryRun {
+		e.progress.Start()
+	}
+
+	// Phase 2: Start Scanner in background
 	if !e.quiet {
 		fmt.Fprintf(os.Stderr, "Scanning %s ...\n", srcDir)
 	}
 
-	scanResult, err := ScanDir(srcDir, dstDir, e.opts)
-	if err != nil {
-		return fmt.Errorf("scan: %w", err)
-	}
-	if len(scanResult.ScanErrors) > 0 {
-		e.errorsMu.Lock()
-		e.errors = append(e.errors, scanResult.ScanErrors...)
-		e.errorsMu.Unlock()
-	}
+	outChan := make(chan FileEntry, 1000)
+	var scanDirs []FileEntry
+	var scanErrs []error
+	var scanErr error
 
-	if !e.quiet {
-		fmt.Fprintf(os.Stderr, "Found %d files (%s)\n",
-			scanResult.TotalFiles,
-			formatBytes(scanResult.TotalBytes))
-	}
+	var scanWg sync.WaitGroup
+	scanWg.Add(1)
+	go func() {
+		defer scanWg.Done()
+		defer close(outChan)
+		scanDirs, scanErrs, scanErr = ScanDirAsync(ctx, srcDir, dstDir, e.opts, outChan, e.progress)
+	}()
 
+	// If dry run, just print from channel
 	if e.dryRun {
-		e.printDryRun(scanResult)
-		return nil
+		fmt.Println("DRY RUN — files that would be copied:")
+		for f := range outChan {
+			action := "COPY"
+			if !NeedsCopy(f.SrcPath, f.DstPath, f.Info, e.opts.Force) {
+				action = "SKIP"
+			}
+			fmt.Printf("  [%s] %s (%s)\n", action, f.RelPath, formatBytes(f.Info.Size()))
+		}
+		scanWg.Wait()
+		return scanErr
 	}
 
-	// Phase 2: Setup progress tracker
-	e.progress = NewProgress(scanResult.TotalFiles, scanResult.TotalBytes, e.quiet)
-	e.progress.Start()
-
-	// Phase 3: Dispatch files to workers
-	// Separate small and large file queues
+	// Phase 3: Setup workers and router
 	smallFiles := make(chan FileEntry, e.numWorkers*2)
 	largeFiles := make(chan FileEntry, 4)
 
@@ -79,7 +87,7 @@ func (e *CopyEngine) Run(srcDir, dstDir string) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			e.worker(smallFiles)
+			e.worker(ctx, smallFiles)
 		}()
 	}
 
@@ -92,12 +100,12 @@ func (e *CopyEngine) Run(srcDir, dstDir string) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			e.worker(largeFiles)
+			e.worker(ctx, largeFiles)
 		}()
 	}
 
-	// Dispatch files to appropriate queues
-	for _, f := range scanResult.Files {
+	// Router: dispatch files to appropriate queues
+	for f := range outChan {
 		if f.Info.Size() >= LargeFileThreshold && !f.IsSymlink {
 			largeFiles <- f
 		} else {
@@ -109,13 +117,22 @@ func (e *CopyEngine) Run(srcDir, dstDir string) error {
 
 	// Wait for all workers to finish
 	wg.Wait()
+	scanWg.Wait()
+
+	if scanErr != nil {
+		return fmt.Errorf("scan: %w", scanErr)
+	}
+	if len(scanErrs) > 0 {
+		e.errorsMu.Lock()
+		e.errors = append(e.errors, scanErrs...)
+		e.errorsMu.Unlock()
+	}
 
 	// Phase 4: Preserve directory metadata (must be done after all files are copied)
 	if e.opts.Archive {
 		// Process in reverse order so child dirs are set before parents
-		dirs := scanResult.Dirs()
-		for i := len(dirs) - 1; i >= 0; i-- {
-			d := dirs[i]
+		for i := len(scanDirs) - 1; i >= 0; i-- {
+			d := scanDirs[i]
 			if err := PreserveDirMetadata(d.SrcPath, d.DstPath, d.Info); err != nil {
 				e.addError(fmt.Errorf("dir metadata %s: %w", d.RelPath, err))
 			}
@@ -147,8 +164,13 @@ func (e *CopyEngine) Run(srcDir, dstDir string) error {
 }
 
 // worker processes files from the given channel.
-func (e *CopyEngine) worker(files <-chan FileEntry) {
+func (e *CopyEngine) worker(ctx context.Context, files <-chan FileEntry) {
 	for f := range files {
+		// Check for cancellation before processing the next file
+		if ctx.Err() != nil {
+			return
+		}
+
 		// Check if incremental skip applies
 		if !e.opts.Force && !NeedsCopy(f.SrcPath, f.DstPath, f.Info, e.opts.Force) {
 			e.progress.AddSkippedFile()
@@ -192,16 +214,7 @@ func (e *CopyEngine) Errors() []error {
 	return result
 }
 
-func (e *CopyEngine) printDryRun(result *ScanResult) {
-	fmt.Println("DRY RUN — files that would be copied:")
-	for _, f := range result.Files {
-		action := "COPY"
-		if !NeedsCopy(f.SrcPath, f.DstPath, f.Info, e.opts.Force) {
-			action = "SKIP"
-		}
-		fmt.Printf("  [%s] %s (%s)\n", action, f.RelPath, formatBytes(f.Info.Size()))
-	}
-}
+// printDryRun has been removed as it's now handled inline.
 
 func (e *CopyEngine) printChecksums() {
 	if len(e.checksums) == 0 {

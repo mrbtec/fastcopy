@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -21,38 +22,31 @@ type FileEntry struct {
 	IsSymlink bool
 }
 
-// ScanResult holds the result of a directory scan.
-type ScanResult struct {
-	Files      []FileEntry
-	TotalFiles int64
-	TotalBytes int64
-	ScanErrors []error     // errors encountered during scan when SkipErrors is true
-	dirs       []FileEntry // directories for later metadata preservation
-}
-
-// ScanDir recursively scans srcDir and builds a list of FileEntry items
-// that map source paths to destination paths under dstDir.
-// It also creates all necessary directories in the destination.
-func ScanDir(srcDir, dstDir string, opts Options) (*ScanResult, error) {
+// ScanDirAsync recursively scans srcDir and sends FileEntry items
+// to the 'out' channel. It also creates necessary destination directories.
+// It returns a list of directories for metadata preservation, a list of errors, and any fatal error.
+func ScanDirAsync(ctx context.Context, srcDir, dstDir string, opts Options, out chan<- FileEntry, p *Progress) ([]FileEntry, []error, error) {
 	srcDir, err := filepath.Abs(srcDir)
 	if err != nil {
-		return nil, fmt.Errorf("abs source: %w", err)
+		return nil, nil, fmt.Errorf("abs source: %w")
 	}
 	dstDir, err = filepath.Abs(dstDir)
 	if err != nil {
-		return nil, fmt.Errorf("abs dest: %w", err)
+		return nil, nil, fmt.Errorf("abs dest: %w")
 	}
 
-	result := &ScanResult{}
-
-	// Track directories we need to set metadata on later
 	var dirs []FileEntry
+	var scanErrors []error
 	createdDirs := make(map[string]bool)
 
 	err = filepath.WalkDir(srcDir, func(path string, d fs.DirEntry, err error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+
 		if err != nil {
 			if opts.SkipErrors {
-				result.ScanErrors = append(result.ScanErrors, fmt.Errorf("walk %s: %w", path, err))
+				scanErrors = append(scanErrors, fmt.Errorf("walk %s: %w", path, err))
 				if d != nil && d.IsDir() {
 					return fs.SkipDir
 				}
@@ -71,7 +65,7 @@ func ScanDir(srcDir, dstDir string, opts Options) (*ScanResult, error) {
 		info, err := d.Info()
 		if err != nil {
 			if opts.SkipErrors {
-				result.ScanErrors = append(result.ScanErrors, fmt.Errorf("info %s: %w", path, err))
+				scanErrors = append(scanErrors, fmt.Errorf("info %s: %w", path, err))
 				if d.IsDir() {
 					return fs.SkipDir
 				}
@@ -86,7 +80,7 @@ func ScanDir(srcDir, dstDir string, opts Options) (*ScanResult, error) {
 				if !opts.DryRun {
 					if err := os.MkdirAll(dstPath, info.Mode().Perm()); err != nil {
 						if opts.SkipErrors {
-							result.ScanErrors = append(result.ScanErrors, fmt.Errorf("mkdir %s: %w", dstPath, err))
+							scanErrors = append(scanErrors, fmt.Errorf("mkdir %s: %w", dstPath, err))
 							return fs.SkipDir
 						}
 						return fmt.Errorf("mkdir %s: %w", dstPath, err)
@@ -117,7 +111,7 @@ func ScanDir(srcDir, dstDir string, opts Options) (*ScanResult, error) {
 			if lerr == nil {
 				info = linfo
 			} else if opts.SkipErrors {
-				result.ScanErrors = append(result.ScanErrors, fmt.Errorf("lstat symlink %s: %w", path, lerr))
+				scanErrors = append(scanErrors, fmt.Errorf("lstat symlink %s: %w", path, lerr))
 				return nil
 			} else {
 				return fmt.Errorf("lstat symlink %s: %w", path, lerr)
@@ -132,28 +126,24 @@ func ScanDir(srcDir, dstDir string, opts Options) (*ScanResult, error) {
 			IsSymlink: isSymlink,
 		}
 
-		result.Files = append(result.Files, entry)
-		result.TotalFiles++
-		if !isSymlink {
-			result.TotalBytes += info.Size()
+		if p != nil {
+			if !isSymlink {
+				p.AddDiscoveredFile(info.Size())
+			} else {
+				p.AddDiscoveredFile(0)
+			}
 		}
+
+		out <- entry
 
 		return nil
 	})
 
 	if err != nil {
-		return nil, err
+		return nil, scanErrors, err
 	}
 
-	// Store dirs for later metadata preservation
-	result.dirs = dirs
-
-	return result, nil
-}
-
-// Dirs returns the directories found during scanning (for metadata preservation).
-func (r *ScanResult) Dirs() []FileEntry {
-	return r.dirs
+	return dirs, scanErrors, nil
 }
 
 

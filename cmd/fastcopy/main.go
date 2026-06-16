@@ -17,10 +17,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"runtime"
+	"syscall"
 
 	"github.com/moises/fastcopy/internal"
 )
@@ -104,7 +107,23 @@ func main() {
 
 	engine := internal.NewCopyEngine(*numWorkers, opts, *quiet, *dryRun)
 
-	if err := engine.Run(srcDir, dstDir); err != nil {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		if !*quiet {
+			fmt.Fprintf(os.Stderr, "\nReceived interrupt, stopping copy...\n")
+		}
+		cancel()
+	}()
+
+	if err := engine.Run(ctx, srcDir, dstDir); err != nil {
+		if err.Error() == "context canceled" {
+			os.Exit(130) // standard exit code for SIGINT
+		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
