@@ -41,9 +41,14 @@ func (e *CopyEngine) Run(srcDir, dstDir string) error {
 		fmt.Fprintf(os.Stderr, "Scanning %s ...\n", srcDir)
 	}
 
-	scanResult, err := ScanDir(srcDir, dstDir)
+	scanResult, err := ScanDir(srcDir, dstDir, e.opts)
 	if err != nil {
 		return fmt.Errorf("scan: %w", err)
+	}
+	if len(scanResult.ScanErrors) > 0 {
+		e.errorsMu.Lock()
+		e.errors = append(e.errors, scanResult.ScanErrors...)
+		e.errorsMu.Unlock()
 	}
 
 	if !e.quiet {
@@ -128,6 +133,9 @@ func (e *CopyEngine) Run(srcDir, dstDir string) error {
 
 	// Report errors
 	if len(e.errors) > 0 {
+		if e.opts.ErrorLog != "" {
+			e.writeErrorLog()
+		}
 		fmt.Fprintf(os.Stderr, "\n⚠ %d errors occurred:\n", len(e.errors))
 		for _, err := range e.errors {
 			fmt.Fprintf(os.Stderr, "  • %s\n", err)
@@ -202,6 +210,19 @@ func (e *CopyEngine) printChecksums() {
 	fmt.Println("\nSHA256 Checksums:")
 	for path, sum := range e.checksums {
 		fmt.Printf("  %s  %s\n", sum, path)
+	}
+}
+
+func (e *CopyEngine) writeErrorLog() {
+	f, err := os.OpenFile(e.opts.ErrorLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to open error log: %v\n", err)
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "--- Fastcopy Errors ---\n")
+	for _, eErr := range e.errors {
+		fmt.Fprintf(f, "%v\n", eErr)
 	}
 }
 

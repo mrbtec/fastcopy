@@ -37,6 +37,8 @@ func main() {
 	force := flag.Bool("force", false, "disable incremental mode, always recopy all files")
 	noArchive := flag.Bool("no-archive", false, "don't preserve permissions/ownership/timestamps")
 	quiet := flag.Bool("quiet", false, "suppress progress output")
+	skipErrors := flag.Bool("skip-errors", false, "skip files/folders with permission or read errors")
+	errorLog := flag.String("error-log", "", "path to save detailed error log")
 	showVersion := flag.Bool("version", false, "show version and exit")
 
 	flag.Usage = func() {
@@ -78,9 +80,11 @@ func main() {
 	}
 
 	// Create destination if it doesn't exist
-	if err := os.MkdirAll(dstDir, 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: cannot create destination %s: %v\n", dstDir, err)
-		os.Exit(1)
+	if !*dryRun {
+		if err := os.MkdirAll(dstDir, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: cannot create destination %s: %v\n", dstDir, err)
+			os.Exit(1)
+		}
 	}
 
 	if !*quiet {
@@ -90,9 +94,12 @@ func main() {
 
 	// Configure and run
 	opts := internal.Options{
-		Archive:  !*noArchive,
-		Checksum: *checksum,
-		Force:    *force,
+		Archive:    !*noArchive,
+		Checksum:   *checksum,
+		Force:      *force,
+		SkipErrors: *skipErrors,
+		ErrorLog:   *errorLog,
+		DryRun:     *dryRun,
 	}
 
 	engine := internal.NewCopyEngine(*numWorkers, opts, *quiet, *dryRun)
