@@ -139,7 +139,17 @@ func (e *CopyEngine) Run(ctx context.Context, srcDir, dstDir string) error {
 		}
 	}
 
-	// Phase 5: Print summary
+	// Phase 5: Remove empty source directories if RemoveSource is enabled
+	if e.opts.RemoveSource {
+		// Dirs are already sorted parents before children, so reverse order removes children first
+		for i := len(scanDirs) - 1; i >= 0; i-- {
+			d := scanDirs[i]
+			// We try to remove the directory. If it fails (e.g. not empty because of an error file), we silently ignore it.
+			_ = os.Remove(d.SrcPath)
+		}
+	}
+
+	// Phase 6: Print summary
 	e.progress.Stop()
 	e.progress.PrintSummary(os.Stderr)
 
@@ -174,6 +184,11 @@ func (e *CopyEngine) worker(ctx context.Context, files <-chan FileEntry) {
 		// Check if incremental skip applies
 		if !e.opts.Force && !NeedsCopy(f.SrcPath, f.DstPath, f.Info, e.opts.Force) {
 			e.progress.AddSkippedFile()
+			if e.opts.RemoveSource {
+				if err := os.Remove(f.SrcPath); err != nil {
+					e.addError(fmt.Errorf("remove skipped source %s: %w", f.SrcPath, err))
+				}
+			}
 			continue
 		}
 
@@ -191,6 +206,12 @@ func (e *CopyEngine) worker(ctx context.Context, files <-chan FileEntry) {
 		}
 
 		e.progress.AddCopiedFile(f.Info.Size())
+
+		if e.opts.RemoveSource {
+			if err := os.Remove(f.SrcPath); err != nil {
+				e.addError(fmt.Errorf("remove source %s: %w", f.SrcPath, err))
+			}
+		}
 	}
 }
 

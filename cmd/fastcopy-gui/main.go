@@ -75,6 +75,7 @@ func main() {
 	chkChecksum := widget.NewCheck("Compute SHA256 checksum", nil)
 	chkForce := widget.NewCheck("Force recopy (ignore incremental)", nil)
 	chkNoArchive := widget.NewCheck("Don't preserve permissions/timestamps", nil)
+	chkRemoveSource := widget.NewCheck("Delete source files after copy (Move)", nil)
 
 	workersEntry := widget.NewEntry()
 	workersEntry.SetText("0")
@@ -88,6 +89,7 @@ func main() {
 		chkChecksum,
 		chkForce,
 		chkNoArchive,
+		chkRemoveSource,
 		workersRow,
 	)
 
@@ -152,9 +154,10 @@ func main() {
 		fmt.Sscanf(workersEntry.Text, "%d", &numWorkers)
 
 		opts := internal.Options{
-			Archive:  !chkNoArchive.Checked,
-			Checksum: chkChecksum.Checked,
-			Force:    chkForce.Checked,
+			Archive:      !chkNoArchive.Checked,
+			Checksum:     chkChecksum.Checked,
+			Force:        chkForce.Checked,
+			RemoveSource: chkRemoveSource.Checked,
 		}
 
 		engine := internal.NewCopyEngine(numWorkers, opts, true, false)

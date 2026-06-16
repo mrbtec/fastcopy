@@ -34,12 +34,13 @@ func putBuf(buf []byte) {
 
 // Options configures a file copy operation.
 type Options struct {
-	Archive    bool   // Preserve permissions, ownership, timestamps
-	Checksum   bool   // Compute SHA256 during copy
-	Force      bool   // Disable incremental (always recopy)
-	SkipErrors bool   // Skip files/dirs that cause errors
-	ErrorLog   string // File path to save the error log
-	DryRun     bool   // Do not modify the filesystem
+	Archive      bool   // Preserve permissions, ownership, timestamps
+	Checksum     bool   // Compute SHA256 during copy
+	Force        bool   // Disable incremental (always recopy)
+	SkipErrors   bool   // Skip files/dirs that cause errors
+	ErrorLog     string // File path to save the error log
+	DryRun       bool   // Do not modify the filesystem
+	RemoveSource bool   // Delete source files and empty directories after successful copy
 }
 
 // CopyFile copies a single file from srcPath to dstPath, applying the

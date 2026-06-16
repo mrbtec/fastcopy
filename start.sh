@@ -170,6 +170,19 @@ run_tests() {
         exit 1
     fi
 
+    # Test 6: Remove source
+    echo -ne "  Test 6: Remove source............. "
+    # Re-create some files in a temporary source just for this test
+    mkdir -p "$TMPDIR/src_move/subdir"
+    echo "move me" > "$TMPDIR/src_move/move.txt"
+    OUTPUT=$("$SCRIPT_DIR/fastcopy" --quiet --remove-source "$TMPDIR/src_move" "$TMPDIR/dst5" 2>&1)
+    if [ ! -f "$TMPDIR/src_move/move.txt" ] && [ -f "$TMPDIR/dst5/move.txt" ] && [ ! -d "$TMPDIR/src_move/subdir" ] && [ ! -d "$TMPDIR/src_move" ]; then
+        echo -e "${GREEN}PASS${NC}"
+    else
+        echo -e "${RED}FAIL${NC}"
+        exit 1
+    fi
+
     echo ""
     echo -e "${GREEN}${BOLD}All tests passed!${NC}"
 }

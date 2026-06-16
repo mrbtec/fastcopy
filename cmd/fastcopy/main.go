@@ -42,6 +42,7 @@ func main() {
 	quiet := flag.Bool("quiet", false, "suppress progress output")
 	skipErrors := flag.Bool("skip-errors", false, "skip files/folders with permission or read errors")
 	errorLog := flag.String("error-log", "", "path to save detailed error log")
+	removeSource := flag.Bool("remove-source", false, "delete source files and empty directories after successful copy (move)")
 	showVersion := flag.Bool("version", false, "show version and exit")
 
 	flag.Usage = func() {
@@ -97,12 +98,13 @@ func main() {
 
 	// Configure and run
 	opts := internal.Options{
-		Archive:    !*noArchive,
-		Checksum:   *checksum,
-		Force:      *force,
-		SkipErrors: *skipErrors,
-		ErrorLog:   *errorLog,
-		DryRun:     *dryRun,
+		Archive:      !*noArchive,
+		Checksum:     *checksum,
+		Force:        *force,
+		SkipErrors:   *skipErrors,
+		ErrorLog:     *errorLog,
+		DryRun:       *dryRun,
+		RemoveSource: *removeSource,
 	}
 
 	engine := internal.NewCopyEngine(*numWorkers, opts, *quiet, *dryRun)
