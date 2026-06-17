@@ -144,6 +144,10 @@ func (e *CopyEngine) Run(ctx context.Context, srcDir, dstDir string) error {
 		// Dirs are already sorted parents before children, so reverse order removes children first
 		for i := len(scanDirs) - 1; i >= 0; i-- {
 			d := scanDirs[i]
+			// Skip the root source directory to avoid deleting mount points or important directories
+			if d.RelPath == "." {
+				continue
+			}
 			// We try to remove the directory. If it fails (e.g. not empty because of an error file), we silently ignore it.
 			_ = os.Remove(d.SrcPath)
 		}

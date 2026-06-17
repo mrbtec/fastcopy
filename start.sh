@@ -176,7 +176,8 @@ run_tests() {
     mkdir -p "$TMPDIR/src_move/subdir"
     echo "move me" > "$TMPDIR/src_move/move.txt"
     OUTPUT=$("$SCRIPT_DIR/fastcopy" --quiet --remove-source "$TMPDIR/src_move" "$TMPDIR/dst5" 2>&1)
-    if [ ! -f "$TMPDIR/src_move/move.txt" ] && [ -f "$TMPDIR/dst5/move.txt" ] && [ ! -d "$TMPDIR/src_move/subdir" ] && [ ! -d "$TMPDIR/src_move" ]; then
+    # Source files and subdirs should be removed, but root source dir is preserved (safer behavior)
+    if [ ! -f "$TMPDIR/src_move/move.txt" ] && [ -f "$TMPDIR/dst5/move.txt" ] && [ ! -d "$TMPDIR/src_move/subdir" ] && [ -d "$TMPDIR/src_move" ]; then
         echo -e "${GREEN}PASS${NC}"
     else
         echo -e "${RED}FAIL${NC}"

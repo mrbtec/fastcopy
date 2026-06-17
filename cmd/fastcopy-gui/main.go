@@ -75,6 +75,7 @@ func main() {
 	chkChecksum := widget.NewCheck("Compute SHA256 checksum", nil)
 	chkForce := widget.NewCheck("Force recopy (ignore incremental)", nil)
 	chkNoArchive := widget.NewCheck("Don't preserve permissions/timestamps", nil)
+	chkSkipErrors := widget.NewCheck("Skip errors (continue on permission/read errors)", nil)
 	chkRemoveSource := widget.NewCheck("Delete source files after copy (Move)", nil)
 
 	workersEntry := widget.NewEntry()
@@ -89,6 +90,7 @@ func main() {
 		chkChecksum,
 		chkForce,
 		chkNoArchive,
+		chkSkipErrors,
 		chkRemoveSource,
 		workersRow,
 	)
@@ -136,18 +138,11 @@ func main() {
 	var stopBtn *widget.Button
 	var cancelFunc context.CancelFunc
 
-	copyBtn = widget.NewButton("▶  Start Copy", func() {
-		if copying {
-			return
-		}
-
+	// startCopy contains the actual copy logic, extracted so we can call it
+	// after an optional confirmation dialog.
+	startCopy := func() {
 		src := srcEntry.Text
 		dst := dstEntry.Text
-
-		if src == "" || dst == "" {
-			dialog.ShowError(fmt.Errorf("Please select both source and destination directories"), win)
-			return
-		}
 
 		// Parse workers
 		var numWorkers int
@@ -157,6 +152,7 @@ func main() {
 			Archive:      !chkNoArchive.Checked,
 			Checksum:     chkChecksum.Checked,
 			Force:        chkForce.Checked,
+			SkipErrors:   chkSkipErrors.Checked,
 			RemoveSource: chkRemoveSource.Checked,
 		}
 
@@ -180,10 +176,7 @@ func main() {
 		cancelFunc = cancel
 
 		go func() {
-			err := engine.Run(ctx, src, dst)
-
-			// Poll progress while engine is running
-			// This goroutine monitors the copy progress
+			// Start progress polling BEFORE engine.Run (which blocks)
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
@@ -223,17 +216,17 @@ func main() {
 						internal.FormatBytes(snap.CopiedBytes),
 						internal.FormatBytes(snap.TotalBytes)))
 
-					if processed >= snap.TotalFiles {
+					if processed >= snap.TotalFiles && snap.TotalFiles > 0 {
 						return
 					}
 					time.Sleep(200 * time.Millisecond)
 				}
 			}()
 
-			// Wait until engine.Run returns (the err is already captured above)
-			// The progress polling goroutine will exit on its own.
-			_ = err
+			// engine.Run blocks until copy finishes
+			err := engine.Run(ctx, src, dst)
 
+			// Wait for progress polling to finish
 			<-done
 
 			// UI state: finished
@@ -267,6 +260,39 @@ func main() {
 				}
 			}
 		}()
+	}
+
+	copyBtn = widget.NewButton("▶  Start Copy", func() {
+		if copying {
+			return
+		}
+
+		src := srcEntry.Text
+		dst := dstEntry.Text
+
+		if src == "" || dst == "" {
+			dialog.ShowError(fmt.Errorf("Please select both source and destination directories"), win)
+			return
+		}
+
+		// If RemoveSource is checked, show a confirmation dialog before proceeding
+		if chkRemoveSource.Checked {
+			dialog.ShowConfirm(
+				"⚠ Confirmar Deleção da Origem",
+				"Os arquivos e pastas da ORIGEM serão DELETADOS após a cópia.\n\n"+
+					"Origem: "+src+"\n\n"+
+					"Esta operação é IRREVERSÍVEL.\nDeseja continuar?",
+				func(confirmed bool) {
+					if confirmed {
+						startCopy()
+					}
+				},
+				win,
+			)
+			return
+		}
+
+		startCopy()
 	})
 
 	stopBtn = widget.NewButton("🛑 Stop", func() {

@@ -28,7 +28,7 @@ type FileEntry struct {
 func ScanDirAsync(ctx context.Context, srcDir, dstDir string, opts Options, out chan<- FileEntry, p *Progress) ([]FileEntry, []error, error) {
 	srcDir, err := filepath.Abs(srcDir)
 	if err != nil {
-		return nil, nil, fmt.Errorf("abs source: %w")
+		return nil, nil, fmt.Errorf("abs source: %w", err)
 	}
 	dstDir, err = filepath.Abs(dstDir)
 	if err != nil {
