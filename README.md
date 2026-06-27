@@ -61,7 +61,7 @@ Rodar a suíte de testes de integração, que verifica cópias incrementais, che
 ```
 
 ## Estrutura do Código
-
+//
 - `cmd/fastcopy/`: Ponto de entrada da aplicação de Linha de Comando (CLI).
 - `cmd/fastcopy-gui/`: Ponto de entrada da aplicação Gráfica (GUI).
 - `internal/`: Lógica central do copiador, onde residem os workers paralelos, as otimizações de I/O e a sincronização.
