@@ -17,18 +17,41 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/moises/fastcopy/internal"
+	idx "github.com/moises/fastcopy/internal/index"
 )
 
 const appVersion = "0.2.0"
+
+type AppState struct {
+	currentIndex *idx.Index
+}
 
 func main() {
 	myApp := app.NewWithID("com.moises.fastcopy")
 	myApp.Settings().SetTheme(theme.DarkTheme())
 
 	win := myApp.NewWindow("fastcopy — Ultra-Fast File Copier")
-	win.Resize(fyne.NewSize(620, 480))
+	win.Resize(fyne.NewSize(800, 600))
 	win.CenterOnScreen()
 
+	state := &AppState{}
+
+	// --- Tab 1: Copier ---
+	copierTab := buildCopierTab(win)
+
+	// --- Tab 2: Search ---
+	searchTab := buildSearchTab(win, state)
+
+	tabs := container.NewAppTabs(
+		container.NewTabItem("Copy Engine", copierTab),
+		container.NewTabItem("Index Search", searchTab),
+	)
+
+	win.SetContent(tabs)
+	win.ShowAndRun()
+}
+
+func buildCopierTab(win fyne.Window) fyne.CanvasObject {
 	// ── Header ──
 	title := widget.NewRichTextFromMarkdown("# ⚡ fastcopy")
 	subtitle := widget.NewLabel(fmt.Sprintf("Ultra-fast parallel file copier — v%s", appVersion))
@@ -138,13 +161,10 @@ func main() {
 	var stopBtn *widget.Button
 	var cancelFunc context.CancelFunc
 
-	// startCopy contains the actual copy logic, extracted so we can call it
-	// after an optional confirmation dialog.
 	startCopy := func() {
 		src := srcEntry.Text
 		dst := dstEntry.Text
 
-		// Parse workers
 		var numWorkers int
 		fmt.Sscanf(workersEntry.Text, "%d", &numWorkers)
 
@@ -158,7 +178,6 @@ func main() {
 
 		engine := internal.NewCopyEngine(numWorkers, opts, true, false)
 
-		// UI state: running
 		copying = true
 		copyBtn.Disable()
 		stopBtn.Enable()
@@ -176,7 +195,6 @@ func main() {
 		cancelFunc = cancel
 
 		go func() {
-			// Start progress polling BEFORE engine.Run (which blocks)
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
@@ -223,13 +241,9 @@ func main() {
 				}
 			}()
 
-			// engine.Run blocks until copy finishes
 			err := engine.Run(ctx, src, dst)
-
-			// Wait for progress polling to finish
 			<-done
 
-			// UI state: finished
 			copying = false
 			copyBtn.Enable()
 			stopBtn.Disable()
@@ -275,7 +289,6 @@ func main() {
 			return
 		}
 
-		// If RemoveSource is checked, show a confirmation dialog before proceeding
 		if chkRemoveSource.Checked {
 			dialog.ShowConfirm(
 				"⚠ Confirmar Deleção da Origem",
@@ -304,7 +317,6 @@ func main() {
 	})
 	stopBtn.Disable()
 
-	// ── Layout ──
 	content := container.NewVBox(
 		container.NewCenter(title),
 		container.NewCenter(subtitle),
@@ -318,6 +330,179 @@ func main() {
 		logScroll,
 	)
 
-	win.SetContent(container.NewPadded(content))
-	win.ShowAndRun()
+	return container.NewPadded(content)
+}
+
+func buildSearchTab(win fyne.Window, state *AppState) fyne.CanvasObject {
+	// Index file selector
+	idxPathEntry := widget.NewEntry()
+	idxPathEntry.SetPlaceHolder("Path to .idx file")
+	idxPathEntry.Disable()
+
+	searchBtn := widget.NewButton("Search", nil)
+	searchBtn.Disable()
+	
+	statusLabel := widget.NewLabel("No index loaded")
+
+	idxBrowseBtn := widget.NewButton("Browse", func() {
+		dialog.ShowFileOpen(func(uri fyne.URIReadCloser, err error) {
+			if err != nil || uri == nil {
+				return
+			}
+			path := uri.URI().Path()
+			idxPathEntry.SetText(path)
+			
+			statusLabel.SetText("Loading index...")
+			searchBtn.Disable()
+			
+			go func() {
+				loadedIdx, err := idx.Load(path)
+				if err != nil {
+					dialog.ShowError(err, win)
+					statusLabel.SetText("Failed to load index")
+					return
+				}
+				state.currentIndex = loadedIdx
+				statusLabel.SetText(fmt.Sprintf("Index loaded: %d entries", len(loadedIdx.Entries)))
+				searchBtn.Enable()
+			}()
+		}, win)
+	})
+
+	// Search controls
+	queryEntry := widget.NewEntry()
+	queryEntry.SetPlaceHolder("Glob pattern (e.g., *.txt, prefix*) or exact hash")
+	dupCheck := widget.NewCheck("Only duplicates", nil)
+
+	// Pagination controls
+	pageLabel := widget.NewLabel("Page: 1")
+	prevBtn := widget.NewButton("← Prev", nil)
+	nextBtn := widget.NewButton("Next →", nil)
+
+	// Results data
+	const pageSize = 50
+	var results []idx.Entry
+	var currentPage int = 0
+
+	// Use List for perfect virtualization and performance
+	list := widget.NewList(
+		func() int {
+			start := currentPage * pageSize
+			if start >= len(results) {
+				return 0
+			}
+			end := start + pageSize
+			if end > len(results) {
+				end = len(results)
+			}
+			return end - start
+		},
+		func() fyne.CanvasObject {
+			// Template for a single row
+			return container.NewGridWithColumns(3,
+				widget.NewLabel("Path"),
+				widget.NewLabel("Size"),
+				widget.NewLabel("Hash"),
+			)
+		},
+		func(i widget.ListItemID, o fyne.CanvasObject) {
+			start := currentPage * pageSize
+			if start+i >= len(results) {
+				return
+			}
+			entry := results[start+i]
+			
+			row := o.(*fyne.Container)
+			row.Objects[0].(*widget.Label).SetText(entry.Path)
+			row.Objects[1].(*widget.Label).SetText(internal.FormatBytes(entry.Size))
+			row.Objects[2].(*widget.Label).SetText(entry.Hash)
+		},
+	)
+
+	// Helper to refresh table data
+	refreshView := func() {
+		list.Refresh()
+		totalPages := (len(results) + pageSize - 1) / pageSize
+		if totalPages == 0 {
+			totalPages = 1
+		}
+		pageLabel.SetText(fmt.Sprintf("Page: %d / %d", currentPage+1, totalPages))
+	}
+
+	searchBtn.OnTapped = func() {
+		if state.currentIndex == nil {
+			dialog.ShowError(errors.New("please load an index first"), win)
+			return
+		}
+
+		q := idx.Query{
+			Name:       queryEntry.Text,
+			Duplicates: dupCheck.Checked,
+			// GUI will handle its own pagination via slice slicing, 
+			// so we retrieve all matching results to know the total count.
+			Limit:      0, 
+			Offset:     0,
+		}
+		
+		statusLabel.SetText("Searching...")
+		
+		go func() {
+			start := time.Now()
+			res := state.currentIndex.Search(q)
+			elapsed := time.Since(start)
+			
+			// Replace underlying data
+			results = res
+			currentPage = 0
+			
+			// UI updates must be on main thread
+			statusLabel.SetText(fmt.Sprintf("Found %d results in %v", len(results), elapsed))
+			refreshView()
+		}()
+	}
+
+	// Pagination button actions
+	prevBtn.OnTapped = func() {
+		if currentPage > 0 {
+			currentPage--
+			refreshView()
+		}
+	}
+	nextBtn.OnTapped = func() {
+		if (currentPage+1)*pageSize < len(results) {
+			currentPage++
+			refreshView()
+		}
+	}
+
+	// List header
+	header := container.NewGridWithColumns(3,
+		widget.NewLabelWithStyle("Path", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabelWithStyle("Size", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabelWithStyle("Hash", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+	)
+
+	// Assemble layout
+	topForm := container.NewBorder(nil, nil, nil, idxBrowseBtn, idxPathEntry)
+	controls := container.NewHBox(queryEntry, dupCheck, searchBtn)
+	pagination := container.NewHBox(prevBtn, pageLabel, nextBtn)
+	content := container.NewBorder(
+		container.NewVBox(
+			topForm,
+			widget.NewSeparator(),
+			controls,
+			widget.NewSeparator(),
+			header,
+			widget.NewSeparator(),
+		),
+		container.NewVBox(
+			widget.NewSeparator(),
+			container.NewBorder(nil, nil, statusLabel, pagination),
+		),
+		nil,
+		nil,
+		list,
+	)
+
+	return container.NewPadded(content)
 }

@@ -26,6 +26,7 @@ import (
 	"syscall"
 
 	"github.com/moises/fastcopy/internal"
+	idx "github.com/moises/fastcopy/internal/index"
 )
 
 var (
@@ -44,6 +45,12 @@ func main() {
 	errorLog := flag.String("error-log", "", "path to save detailed error log")
 	removeSource := flag.Bool("remove-source", false, "delete source files and empty directories after successful copy (move)")
 	showVersion := flag.Bool("version", false, "show version and exit")
+	// Indexing flags (new design)
+	createIdx := flag.Bool("index-build", false, "build file index for the given directory")
+	search := flag.String("index-search", "", "search term/pattern in index")
+	idxPath := flag.String("index-path", "fastcopy.idx", "path to the index file")
+	indexHash := flag.Bool("index-hash", false, "compute SHA-256 hashes during index build")
+	indexDupes := flag.Bool("index-dupes", false, "list duplicate files from index")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "fastcopy v%s — Ultra-fast parallel file copier\n\n", version)
@@ -62,6 +69,59 @@ func main() {
 	if *showVersion {
 		fmt.Printf("fastcopy v%s (Go %s, %s/%s)\n", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 		os.Exit(0)
+	}
+
+	// Index creation, search, or duplicate listing takes precedence over copy operation.
+	if *createIdx || *search != "" || *indexDupes {
+		if *createIdx {
+			// Expect a source directory argument after flags.
+			if len(flag.Args()) < 1 {
+				fmt.Fprintln(os.Stderr, "Source directory required for index creation")
+				os.Exit(1)
+			}
+			src := flag.Args()[0]
+			idxObj, err := idx.BuildFromScan(context.Background(), src, *indexHash)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error building index: %v\n", err)
+				os.Exit(1)
+			}
+			if err := idxObj.Save(*idxPath); err != nil {
+				fmt.Fprintf(os.Stderr, "Error saving index: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Index built successfully: %d entries\n", len(idxObj.Entries))
+			os.Exit(0)
+		}
+
+		// Load existing index for search or duplicate listing.
+		idxObj, err := idx.Load(*idxPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading index: %v\n", err)
+			os.Exit(1)
+		}
+
+		if *search != "" {
+			q := idx.Query{Name: *search}
+			results := idxObj.Search(q)
+			for _, r := range results {
+				fmt.Printf("  %s (%d bytes)\n", r.Path, r.Size)
+			}
+			os.Exit(0)
+		}
+
+		if *indexDupes {
+			groups := idxObj.FindDuplicates()
+			if len(groups) == 0 {
+				fmt.Println("No duplicates found.")
+			}
+			for _, grp := range groups {
+				fmt.Println("Duplicate group:")
+				for _, e := range grp {
+					fmt.Printf("  %s (%d bytes, hash=%s)\n", e.Path, e.Size, e.Hash)
+				}
+			}
+			os.Exit(0)
+		}
 	}
 
 	if len(flag.Args()) < 2 {
