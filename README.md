@@ -7,8 +7,9 @@ Um copiador de arquivos paralelo ultra-rápido desenvolvido em Go. Projetado par
 - **Desempenho Extremo:** Utiliza chamadas de sistema zero-copy, pré-alocação de disco e dicas inteligentes de I/O.
 - **Processamento Paralelo:** Despachante (dispatcher) paralelizado, otimizado para lidar de forma eficiente com uma mistura de arquivos pequenos e grandes.
 - **Sincronização Incremental:** Ignora automaticamente arquivos não modificados, acelerando muito as atualizações.
+- **Indexação e Busca (Novo!):** Crie índices de diretórios para buscas ultrarrápidas (`O(log N)` e `O(1)`) e detecção de arquivos duplicados usando SHA-256.
 - **Preservação de Metadados:** Mantém permissões, timestamps (datas de modificação) e outros metadados originais.
-- **Interface Dual:** Inclui tanto uma ferramenta de Linha de Comando (CLI) rápida e flexível, quanto uma Interface Gráfica de Usuário (GUI) moderna desenvolvida com o framework [Fyne](https://fyne.io/).
+- **Interface Dual:** Inclui tanto uma ferramenta de Linha de Comando (CLI) robusta, quanto uma Interface Gráfica (GUI) moderna desenvolvida com o framework [Fyne](https://fyne.io/) contendo abas de Cópia e Busca.
 
 ## Pré-requisitos
 
@@ -37,12 +38,11 @@ O projeto conta com o utilitário `start.sh` para facilitar todas as operações
 ./start.sh build-all
 ```
 
-### 3. Executar
-Você pode utilizar o script para compilar e rodar em um único passo:
+### 3. Executar (Operações de Cópia)
 
 **CLI:**
 ```bash
-# Exemplo básico
+# Exemplo básico de cópia
 ./start.sh run /caminho/origem /caminho/destino
 
 # Exemplo avançado com 32 workers paralelos e validação de checksum
@@ -51,18 +51,41 @@ Você pode utilizar o script para compilar e rodar em um único passo:
 
 **GUI:**
 ```bash
+# Abre a interface gráfica com abas de Copiador e Busca de Índice
 ./start.sh run-gui
 ```
 
-### 4. Testes
+### 4. Executar (Indexação e Busca CLI)
+
+O `fastcopy` não apenas copia, mas permite varrer diretórios inteiros rapidamente para criar índices estáticos (`.idx`), pesquisar neles ou encontrar duplicatas:
+
+```bash
+# 1. Criar um índice do diretório calculando Hashes SHA-256
+./start.sh run --index-build --index-hash --index-path=meu_backup.idx /caminho/origem
+
+# 2. Buscar instantaneamente no índice criado
+./start.sh run --index-search="*.mp4" --index-path=meu_backup.idx
+
+# 3. Listar todos os arquivos duplicados no índice (baseado em Hash)
+./start.sh run --index-dupes --index-path=meu_backup.idx
+```
+
+*Nota: Você também pode carregar o arquivo `.idx` gerado diretamente na aba "Index Search" do `fastcopy-gui` para navegar visualmente!*
+
+### 5. Testes
 Rodar a suíte de testes de integração, que verifica cópias incrementais, checksums e cópias a seco (dry run):
 ```bash
 ./start.sh test
 ```
 
 ## Estrutura do Código
-//
+
 - `cmd/fastcopy/`: Ponto de entrada da aplicação de Linha de Comando (CLI).
-- `cmd/fastcopy-gui/`: Ponto de entrada da aplicação Gráfica (GUI).
-- `internal/`: Lógica central do copiador, onde residem os workers paralelos, as otimizações de I/O e a sincronização.
-- `start.sh`: O script gerenciador de tarefas para desenvolvedores e usuários.
+- `cmd/fastcopy-gui/`: Ponto de entrada da aplicação Gráfica (GUI) em Fyne.
+- `internal/`: Lógica central do copiador, engine paralelo e otimizações zero-copy.
+- `internal/index/`: Motor de serialização `gob` puramente em Go para Indexação, Busca Binária e Deduplicação.
+- `start.sh`: Script gerenciador de tarefas para desenvolvedores e usuários.
+
+## Licença
+
+Este projeto é licenciado sob a [MIT License](LICENSE).
