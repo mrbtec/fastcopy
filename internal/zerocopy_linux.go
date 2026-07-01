@@ -4,6 +4,7 @@ package internal
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"golang.org/x/sys/unix"
@@ -68,7 +69,7 @@ func adviseDontNeed(f *os.File) error {
 }
 
 // platformCopyFile performs optimized file copy on Linux using kernel syscalls.
-// Strategy: fallocate → fadvise(SEQUENTIAL) → copy_file_range → fadvise(DONTNEED)
+// Strategy: fallocate → fadvise(SEQUENTIAL) → copy_file_range → splice → fallback
 func platformCopyFile(dst, src *os.File, size int64) error {
 	// Step 1: Pre-allocate destination space
 	_ = preallocate(dst, size)
@@ -78,20 +79,81 @@ func platformCopyFile(dst, src *os.File, size int64) error {
 
 	// Step 3: Zero-copy transfer via kernel
 	err := zeroCopy(dst, src, size)
-	if err != nil {
-		// Fallback: copy_file_range may fail on cross-filesystem, NFS, etc.
-		// Reset file positions and use standard copy
-		src.Seek(0, 0)
-		dst.Seek(0, 0)
-		dst.Truncate(0)
-		return fallbackCopy(dst, src, size)
+	if err == nil {
+		// Step 4: Release pages from cache (don't pollute system cache)
+		_ = adviseDontNeed(src)
+		_ = adviseDontNeed(dst)
+		return nil
 	}
 
-	// Step 4: Release pages from cache (don't pollute system cache)
-	_ = adviseDontNeed(src)
-	_ = adviseDontNeed(dst)
+	// Step 5: Fallback 1 - Zero-copy via pipe (splice) for cross-device/filesystem limits
+	src.Seek(0, io.SeekStart)
+	dst.Seek(0, io.SeekStart)
+	dst.Truncate(0)
+	_ = preallocate(dst, size)
 
-	return nil
+	err = spliceCopy(dst, src, size)
+	if err == nil {
+		_ = adviseDontNeed(src)
+		_ = adviseDontNeed(dst)
+		return nil
+	}
+
+	// Step 6: Fallback 2 - standard buffered userspace copy
+	src.Seek(0, io.SeekStart)
+	dst.Seek(0, io.SeekStart)
+	dst.Truncate(0)
+	return fallbackCopy(dst, src, size)
+}
+
+// spliceCopy performs a zero-copy transfer via a kernel pipe.
+// This is used as a fallback when copy_file_range fails (e.g., cross-device).
+func spliceCopy(dst, src *os.File, size int64) error {
+	srcFd := int(src.Fd())
+	dstFd := int(dst.Fd())
+
+	// Create a pipe for the splice transfer
+	var pipeFds [2]int
+	if err := unix.Pipe2(pipeFds[:], unix.O_CLOEXEC); err != nil {
+		return fmt.Errorf("pipe2: %w", err)
+	}
+	defer unix.Close(pipeFds[0]) // read end
+	defer unix.Close(pipeFds[1]) // write end
+
+	var written int64
+	for written < size {
+		// Use chunks to avoid pipe buffer issues
+		toWrite := size - written
+		if toWrite > 4*1024*1024 { // 4MB chunks
+			toWrite = 4 * 1024 * 1024
+		}
+
+		// Splice from source file to pipe write end
+		n, err := unix.Splice(srcFd, nil, pipeFds[1], nil, int(toWrite), unix.SPLICE_F_MORE)
+		if err != nil {
+			return fmt.Errorf("splice src->pipe: %w", err)
+		}
+		if n == 0 {
+			break
+		}
+
+		// Splice from pipe read end to destination file
+		var pipeWritten int64
+		for pipeWritten < n {
+			m, err := unix.Splice(pipeFds[0], nil, dstFd, nil, int(n-pipeWritten), unix.SPLICE_F_MORE)
+			if err != nil {
+				return fmt.Errorf("splice pipe->dst: %w", err)
+			}
+			if m == 0 {
+				break
+			}
+			pipeWritten += m
+		}
+		written += pipeWritten
+	}
+
+	// Ensure data is synced to disk
+	return unix.Fsync(dstFd)
 }
 
 

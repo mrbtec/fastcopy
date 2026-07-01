@@ -32,7 +32,7 @@ func ScanDirAsync(ctx context.Context, srcDir, dstDir string, opts Options, out 
 	}
 	dstDir, err = filepath.Abs(dstDir)
 	if err != nil {
-		return nil, nil, fmt.Errorf("abs dest: %w")
+		return nil, nil, fmt.Errorf("abs dest: %w", err)
 	}
 
 	var dirs []FileEntry
