@@ -2,3 +2,7 @@
 /fastcopy-gui
 run.log
 .test_*/
+server_bin
+*.log
+*.pid
+server
